@@ -61,6 +61,8 @@ class Neo:
         self.sync_ms = None
         self.synced_at = None
         self.counts = {}
+        self._gds_probed = False
+        self.gds_note = None
         self._lock = threading.RLock()
         self._sync_lock = threading.Lock()
 
@@ -184,10 +186,25 @@ class Neo:
             log.warning("one-transaction rebuild failed (%s); rebuilding in batches", str(e)[:160])
             self._sync_batched(steps)
         self.synced = version
+        if self.gds and not self._gds_probed:
+            self._probe_gds()
         self.sync_ms = int(1000 * (time.time() - t0))
         self.synced_at = time.strftime("%Y-%m-%d %H:%M:%S")
         self.counts = self.stats()
         log.info("Neo4j graph rebuilt in %s ms", self.sync_ms)
+
+    def _probe_gds(self):
+        """Some tiers (e.g. AuraDB Free) list GDS procedures that can't actually run — test a tiny projection."""
+        self._gds_probed = True
+        name = "rice_probe_" + uuid.uuid4().hex[:8]
+        try:
+            self.run("MATCH (a:Institution) WITH a ORDER BY a.id LIMIT 2 WITH collect(a) AS xs "
+                     "WITH gds.graph.project($g, xs[0], xs[-1]) AS g RETURN g.nodeCount AS n", write=True, g=name)
+            self._drop(name)
+        except Exception as e:  # noqa: BLE001
+            log.info("GDS listed but not usable here (%s); algorithms will run in Python", str(e)[:120])
+            self.gds = None
+            self.gds_note = "GDS is listed on this tier but can't run, so algorithms run in Python"
 
     def _sync_batched(self, steps, size=2000):
         with self.driver.session(database=DATABASE) as sess:
